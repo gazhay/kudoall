@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   fill="#fc5200"
+   viewBox="0 0 16 16"
+   width="16"
+   height="16"
+   class=""
+   data-testid="filled_kudos"
+   version="1.1"
+   id="svg1"
+   sodipodi:docname="icon.svg"
+   inkscape:version="1.3-beta (cedbd6c, 2023-05-28)"
+   inkscape:export-filename="icon-128.png"
+   inkscape:export-xdpi="768"
+   inkscape:export-ydpi="768"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs1" />
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#111111"
+     borderopacity="1"
+     inkscape:showpageshadow="0"
+     inkscape:pageopacity="0"
+     inkscape:pagecheckerboard="1"
+     inkscape:deskcolor="#d1d1d1"
+     showgrid="false"
+     inkscape:zoom="74.9375"
+     inkscape:cx="15.713094"
+     inkscape:cy="7.7864887"
+     inkscape:window-width="3440"
+     inkscape:window-height="1402"
+     inkscape:window-x="218"
+     inkscape:window-y="1080"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg1" />
+  <path
+     d="m 14.538193,11.461632 v -1.46 l 0.275,-0.3379998 a 1.94,1.94 0 0 0 -1.506,-3.162 H 8.5131926 l 0.496,-4.055 a 1.735,1.735 0 0 0 -1.722,-1.94499998 0.578,0.578 0 0 0 -0.527,0.34 l -2.5,5.55599998 a 0.667,0.667 0 0 1 -0.184,0.24 l -2.92,2.414 a 0.667,0.667 0 0 0 -0.24299997,0.514 v 3.6029998 c 0,0.736 0.59699997,1.333 1.33299997,1.333 h 1.468 l 1.163,0.776 c 0.219,0.146 0.477,0.224 0.74,0.224 h 6.1710004 a 2.125,2.125 0 0 0 2.125,-2.125 v -0.395 l 0.112,-0.13 c 0.331,-0.387 0.513,-0.88 0.513,-1.39 z"
+     fill=""
+     id="path1" />
+  <text
+     xml:space="preserve"
+     style="font-style:normal;font-variant:normal;font-weight:bold;font-stretch:normal;font-size:7.48912px;line-height:125%;font-family:'Klavika Bold';-inkscape-font-specification:'Klavika Bold, Bold';text-align:start;letter-spacing:0px;word-spacing:0px;writing-mode:lr-tb;text-anchor:start;fill:#ffffff;fill-opacity:1;stroke:none;stroke-width:1.40421px;stroke-linecap:butt;stroke-linejoin:miter;stroke-opacity:1"
+     x="3.409668"
+     y="13.221603"
+     id="text2"><tspan
+       sodipodi:role="line"
+       id="tspan2"
+       x="3.409668"
+       y="13.221603"
+       style="font-size:7.48912px;stroke-width:1.40421px;fill:#ffffff;fill-opacity:1">KA</tspan></text>
+</svg>

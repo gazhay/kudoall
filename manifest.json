@@ -1,0 +1,22 @@
+{
+    "manifest_version": 3,
+    "name": "GHKudo All",
+    "version": "1.0.0",
+    "description": "A kudo all strava thingy",
+    "icons": {
+        "48": "images/icon-48.png",
+        "128": "images/icon-128.png"
+    },
+    "permissions": [
+        "activeTab"
+    ],
+    "content_scripts": [{
+        "matches": ["*://*.strava.com/*"],
+        "js": ["kudoall.js"],
+        "run_at": "document_end" // Options: "document_start", "document_end", or "document_idle"
+    }],
+    "web_accessible_resources": [{
+        "resources": ["images/*"],
+        "matches": ["*://*.strava.com/*"]
+    }]
+}
