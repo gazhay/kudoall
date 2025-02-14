@@ -13,7 +13,7 @@
     "content_scripts": [{
         "matches": ["*://*.strava.com/*"],
         "js": ["kudoall.js"],
-        "run_at": "document_end" // Options: "document_start", "document_end", or "document_idle"
+        "run_at": "document_end"
     }],
     "web_accessible_resources": [{
         "resources": ["images/*"],
