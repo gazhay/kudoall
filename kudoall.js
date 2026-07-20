@@ -30,11 +30,9 @@ function getKudosBtnsWithtin(holder=document){
 function kudoAllFn(e){
     e.preventDefault();
 
-    // Get the current athlete ID to exclude own activities
-    const currentAthleteLink = document.querySelector('ul.user-nav a[href*="/athletes/"]');
-    const currentAthleteHref = currentAthleteLink?.getAttribute('href') || '';
-
     let buttons = getKudosBtnsWithtin();
+    let skipped = 0;
+    let clicked = 0;
 
     buttons.forEach(svg=>{
         let button = svg.closest("button");
@@ -42,14 +40,19 @@ function kudoAllFn(e){
             return console.error("Failed to find button for ",svg);
         }
 
-        // Skip if this button is within an activity owned by the current athlete
-        const card = button.closest('[class*="entry"]') || button.closest('article') || button.closest('div[data-testid]');
-        if (card && currentAthleteHref) {
-            const ownerLink = card.querySelector(`a[href="${currentAthleteHref}"][class*="entry-owner"], a.entry-owner[href="${currentAthleteHref}"]`);
-            if (ownerLink) return;
+        // Skip buttons that are just "view kudos" on your own activities.
+        // On your own activities, the button has title="View all kudos" (you can't kudo yourself).
+        // On other people's activities you haven't kudoed, the title is "Give kudos" or empty.
+        const title = (button.getAttribute("title") || "").toLowerCase();
+        if (title.includes("view all kudos")) {
+            skipped++;
+            console.log("KudoAll: skipping own activity button:", button.getAttribute("title"));
+            return;
         }
 
         button.click();
+        clicked++;
     })
 
+    console.log(`KudoAll: clicked ${clicked}, skipped ${skipped}`);
 }

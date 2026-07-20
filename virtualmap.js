@@ -9,6 +9,136 @@
     const polylineCache = new Map();
 
     /**
+     * Listen for feed data intercepted by the MAIN world script (feed-interceptor.js).
+     * That script hooks fetch/XHR and posts messages with new feed entries.
+     */
+    function listenForFeedData() {
+        window.addEventListener('message', (event) => {
+            if (event.source !== window) return;
+            if (event.data?.type === 'VIRTUALMAP_FEED_DATA') {
+                processIncomingFeedData(event.data.payload);
+            }
+        });
+    }
+
+    /**
+     * Process feed data from intercepted network responses.
+     * Extracts virtual activities and triggers map replacement.
+     */
+    function processIncomingFeedData(data) {
+        if (!data) return;
+
+        // The response might come in various shapes from the feed API
+        let entries = [];
+        if (Array.isArray(data)) {
+            entries = data;
+        } else if (data.entries) {
+            entries = data.entries;
+        } else if (data.preFetchedEntries) {
+            entries = data.preFetchedEntries;
+        } else if (data.data && Array.isArray(data.data)) {
+            entries = data.data;
+        }
+
+        // Also try to recursively find any activity objects in the response
+        if (entries.length === 0) {
+            entries = findEntriesRecursive(data);
+        }
+
+        let newCount = 0;
+        for (const entry of entries) {
+            const found = extractVirtualFromEntry(entry);
+            if (found) newCount++;
+        }
+
+        if (newCount > 0) {
+            console.log(`[VirtualMap] Intercepted ${newCount} new virtual activities from feed fetch`);
+            // Give React time to render the new DOM elements
+            setTimeout(scanAndReplace, 500);
+            setTimeout(scanAndReplace, 1500);
+            setTimeout(scanAndReplace, 3000);
+        }
+    }
+
+    /**
+     * Recursively search an object for things that look like activity entries.
+     */
+    function findEntriesRecursive(obj, depth = 0) {
+        if (depth > 3 || !obj || typeof obj !== 'object') return [];
+        
+        const results = [];
+        
+        // If this object looks like a feed entry, return it
+        if (obj.entity === 'Activity' && obj.activity) {
+            results.push(obj);
+            return results;
+        }
+        if (obj.entity === 'GroupActivity' && obj.rowData) {
+            results.push(obj);
+            return results;
+        }
+
+        // Search arrays and object values
+        const values = Array.isArray(obj) ? obj : Object.values(obj);
+        for (const val of values) {
+            if (val && typeof val === 'object') {
+                results.push(...findEntriesRecursive(val, depth + 1));
+            }
+        }
+        return results;
+    }
+
+    /**
+     * Extract virtual activity info from a single feed entry.
+     * Returns true if a new virtual activity was found.
+     */
+    function extractVirtualFromEntry(entry) {
+        if (!entry) return false;
+
+        // GroupActivity entries
+        if (entry.entity === "GroupActivity" && entry.rowData?.activities) {
+            let found = false;
+            for (const activity of entry.rowData.activities) {
+                if (activity.is_virtual) {
+                    const worldName = parseWorldName(activity.name, activity.description);
+                    const actId = String(activity.activity_id || activity.entity_id);
+                    if (!virtualActivities.has(actId)) {
+                        virtualActivities.set(actId, {
+                            polyline: activity.map_polyline || null,
+                            worldName: worldName,
+                            name: activity.name
+                        });
+                        found = true;
+                    }
+                }
+            }
+            return found;
+        }
+
+        // Regular Activity entries
+        if (entry.entity === "Activity" && entry.activity) {
+            const act = entry.activity;
+            const tagKeys = act.tagKeys || [];
+            if (act.isVirtual || tagKeys.includes("virtual")) {
+                const actId = String(act.id);
+                if (!virtualActivities.has(actId)) {
+                    const desc = stripHtml(act.description || "");
+                    const name = act.activityName || "";
+                    const worldName = parseWorldName(name, desc);
+                    virtualActivities.set(actId, {
+                        polyline: null,
+                        worldName: worldName,
+                        name: name
+                    });
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Extract virtual activity data from the dashboard MFE props.
      */
     function extractVirtualActivities() {
@@ -29,40 +159,10 @@
         const entries = props?.appContext?.feedProps?.preFetchedEntries || [];
         
         for (const entry of entries) {
-            // GroupActivity entries - already have map_polyline
-            if (entry.entity === "GroupActivity" && entry.rowData?.activities) {
-                for (const activity of entry.rowData.activities) {
-                    if (activity.is_virtual) {
-                        const worldName = parseWorldName(activity.name, activity.description);
-                        const actId = String(activity.activity_id || activity.entity_id);
-                        virtualActivities.set(actId, {
-                            polyline: activity.map_polyline || null,
-                            worldName: worldName,
-                            name: activity.name
-                        });
-                    }
-                }
-            }
-            
-            // Regular Activity entries
-            if (entry.entity === "Activity" && entry.activity) {
-                const act = entry.activity;
-                const tagKeys = act.tagKeys || [];
-                if (act.isVirtual || tagKeys.includes("virtual")) {
-                    const actId = String(act.id);
-                    const desc = stripHtml(act.description || "");
-                    const name = act.activityName || "";
-                    const worldName = parseWorldName(name, desc);
-                    virtualActivities.set(actId, {
-                        polyline: null,
-                        worldName: worldName,
-                        name: name
-                    });
-                }
-            }
+            extractVirtualFromEntry(entry);
         }
 
-        console.log(`[VirtualMap] Found ${virtualActivities.size} virtual activities`);
+        console.log(`[VirtualMap] Found ${virtualActivities.size} virtual activities from initial props`);
         for (const [id, data] of virtualActivities) {
             console.log(`[VirtualMap]   ${id}: "${data.name}" → ${data.worldName || "unknown world"} ${data.polyline ? '(polyline ready)' : '(will fetch)'}`);
         }
@@ -263,39 +363,155 @@
 
     /**
      * Scan the DOM for activity cards and replace maps.
+     * Uses two strategies:
+     *   1. Match known virtual activities from preFetchedEntries by activity ID links
+     *   2. Find any "Virtual" badge/tag in the DOM and replace the adjacent map
      */
+    const replacedActivities = new Set();
+
     function scanAndReplace() {
-        if (virtualActivities.size === 0) return;
-
+        // Strategy 1: Replace maps for known virtual activities (from preFetchedEntries)
         for (const [activityId, actData] of virtualActivities) {
-            const links = document.querySelectorAll(`a[href*="/activities/${activityId}"]`);
-            
-            for (const link of links) {
-                // Find map image in this link or its parent card
-                let mapImg = link.querySelector('img[src*="d3o5xota0a1fcr.cloudfront.net"]');
-                
-                if (!mapImg) {
-                    const card = link.closest('[class*="EntryBody"]')
-                              || link.closest('[class*="entry"]')
-                              || link.closest('[data-testid]')
-                              || link.closest('article');
-                    if (card) {
-                        mapImg = card.querySelector('img[src*="d3o5xota0a1fcr.cloudfront.net"]');
-                    }
-                }
+            if (replacedActivities.has(activityId)) continue;
+            attemptReplaceById(activityId, actData);
+        }
 
-                if (mapImg && !replacedElements.has(mapImg) && mapImg.offsetWidth > 50) {
+        // Strategy 2: Find any map images with the "Virtual" badge that we haven't replaced.
+        // This catches activities that weren't in preFetchedEntries (infinite scroll, late render).
+        scanForVirtualBadges();
+    }
+
+    function attemptReplaceById(activityId, actData) {
+        const links = document.querySelectorAll(`a[href*="/activities/${activityId}"]`);
+        
+        for (const link of links) {
+            let mapImg = findMapImage(link);
+            
+            if (!mapImg) {
+                // Walk up to find the activity card containing the map
+                let el = link;
+                for (let i = 0; i < 10; i++) {
+                    el = el.parentElement;
+                    if (!el || el === document.body) break;
+                    mapImg = findMapImage(el);
+                    if (mapImg && !replacedElements.has(mapImg)) break;
+                    mapImg = null;
+                }
+            }
+
+            if (mapImg && !replacedElements.has(mapImg)) {
+                if (mapImg.offsetWidth > 50 && mapImg.offsetHeight > 50) {
+                    replacedActivities.add(activityId);
                     replaceMapInCard(mapImg, activityId, actData);
+                } else if (!mapImg.complete) {
+                    const id = activityId;
+                    const data = actData;
+                    mapImg.addEventListener('load', function onLoad() {
+                        mapImg.removeEventListener('load', onLoad);
+                        if (!replacedElements.has(mapImg) && mapImg.offsetWidth > 50) {
+                            replacedActivities.add(id);
+                            replaceMapInCard(mapImg, id, data);
+                        }
+                    }, { once: true });
+                }
+                break;
+            }
+        }
+    }
+
+    /**
+     * Scan the DOM for "Virtual" tag badges and replace adjacent map images.
+     * This handles activities loaded after the initial page render (infinite scroll)
+     * and activities that render their map image after the initial scan.
+     */
+    function scanForVirtualBadges() {
+        // Strava renders a "Virtual" tag/badge on virtual activities' map area.
+        // Find all map images from the Strava map CDN that haven't been replaced yet.
+        const allMapImgs = document.querySelectorAll(
+            'img[src*="d3o5xota0a1fcr.cloudfront.net"]:not(.virtualmap-replaced)'
+        );
+
+        for (const img of allMapImgs) {
+            if (replacedElements.has(img)) continue;
+            if (img.offsetWidth < 50 || img.offsetHeight < 50) continue;
+
+            // Walk up to find the card container and check for a "Virtual" tag
+            let card = img;
+            for (let i = 0; i < 12; i++) {
+                card = card.parentElement;
+                if (!card || card === document.body) break;
+
+                // Look for the "Virtual" text badge/tag that Strava renders on virtual activities
+                const virtualTag = card.querySelector('[class*="tag"], [class*="Tag"], [data-testid*="tag"]');
+                if (virtualTag && virtualTag.textContent.trim().toLowerCase() === 'virtual') {
+                    // Found a virtual activity card with an unreplaced map image.
+                    // Extract the activity ID from a link in this card.
+                    const actLink = card.querySelector('a[href*="/activities/"]');
+                    const actMatch = actLink?.getAttribute('href')?.match(/\/activities\/(\d+)/);
+                    if (actMatch) {
+                        const activityId = actMatch[1];
+                        if (replacedActivities.has(activityId)) break;
+
+                        // Check if we already have data for this activity
+                        let actData = virtualActivities.get(activityId);
+                        if (!actData) {
+                            // New activity (from infinite scroll) — extract what we can
+                            const nameEl = card.querySelector('a[href*="/activities/"] h3, a[href*="/activities/"] [class*="name"], a[href*="/activities/"] [class*="Name"]');
+                            const name = nameEl?.textContent?.trim() || '';
+                            const worldName = parseWorldName(name, '');
+                            actData = { polyline: null, worldName: worldName, name: name };
+                            virtualActivities.set(activityId, actData);
+                            console.log(`[VirtualMap] Discovered new virtual activity from DOM: ${activityId} "${name}" → ${worldName || 'unknown'}`);
+                        }
+
+                        replacedActivities.add(activityId);
+                        replaceMapInCard(img, activityId, actData);
+                    }
+                    break;
                 }
             }
         }
+    }
+
+    /**
+     * Find a Strava map image within an element.
+     * Handles both img src and srcset, picture/source elements, and lazy-loaded images.
+     */
+    function findMapImage(container) {
+        // Direct img with src matching the Strava map CDN
+        let img = container.querySelector('img[src*="d3o5xota0a1fcr.cloudfront.net"]');
+        if (img && !replacedElements.has(img)) return img;
+
+        // img where srcset references the map CDN (retina images)
+        img = container.querySelector('img[srcset*="d3o5xota0a1fcr.cloudfront.net"]');
+        if (img && !replacedElements.has(img)) return img;
+
+        // source element inside a picture, then get the sibling img
+        const source = container.querySelector('source[srcset*="d3o5xota0a1fcr.cloudfront.net"]');
+        if (source) {
+            img = source.closest('picture')?.querySelector('img');
+            if (img && !replacedElements.has(img)) return img;
+        }
+
+        // Also try matching by the map URL pattern in any img (Strava sometimes uses /v6/maps/)
+        img = container.querySelector('img[src*="/v6/maps/"]');
+        if (img && !replacedElements.has(img)) return img;
+
+        img = container.querySelector('img[srcset*="/v6/maps/"]');
+        if (img && !replacedElements.has(img)) return img;
+
+        // Lazy-loaded images that may have data-src instead of src
+        img = container.querySelector('img[data-src*="d3o5xota0a1fcr.cloudfront.net"]');
+        if (img && !replacedElements.has(img)) return img;
+
+        return null;
     }
 
     function observeDom() {
         let scanTimeout = null;
         const observer = new MutationObserver(() => {
             if (scanTimeout) clearTimeout(scanTimeout);
-            scanTimeout = setTimeout(scanAndReplace, 500);
+            scanTimeout = setTimeout(scanAndReplace, 300);
         });
         observer.observe(document.body, { childList: true, subtree: true });
     }
@@ -314,6 +530,9 @@
     function init() {
         fixLeafletIconPaths();
 
+        // Listen for feed data from the MAIN world interceptor
+        listenForFeedData();
+
         // Detect which page we're on
         const path = window.location.pathname;
 
@@ -330,15 +549,17 @@
     function initDashboard() {
         extractVirtualActivities();
         
-        if (virtualActivities.size === 0) {
-            console.log("[VirtualMap] No virtual activities found");
-            return;
-        }
+        console.log(`[VirtualMap] Dashboard init: ${virtualActivities.size} virtual activities from preFetchedEntries`);
 
         scanAndReplace();
         observeDom();
-        setTimeout(scanAndReplace, 1000);
-        setTimeout(scanAndReplace, 2500);
+        // React renders progressively — retry several times with increasing delays
+        const retryDelays = [500, 1000, 2000, 3500, 5000, 8000, 12000];
+        for (const delay of retryDelays) {
+            setTimeout(() => {
+                scanAndReplace();
+            }, delay);
+        }
     }
 
     /**
