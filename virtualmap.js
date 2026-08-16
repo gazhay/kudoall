@@ -381,18 +381,88 @@
         scanForVirtualBadges();
     }
 
+    /**
+     * Find the nearest activity card boundary element that contains the given element.
+     * This prevents us from walking too far up the DOM and matching a map image
+     * that belongs to a different activity.
+     */
+    function findActivityCard(el) {
+        let current = el;
+        for (let i = 0; i < 15; i++) {
+            current = current.parentElement;
+            if (!current || current === document.body) return null;
+
+            // Strava feed cards typically have data-testid or specific class patterns
+            const testId = current.getAttribute('data-testid') || '';
+            if (testId.includes('activity') || testId.includes('entry') || testId.includes('feed')) {
+                return current;
+            }
+
+            // Also detect card boundaries by looking for elements that contain
+            // exactly one activity link matching our target (scoped card)
+            const actLinks = current.querySelectorAll('a[href*="/activities/"]');
+            const uniqueIds = new Set();
+            for (const l of actLinks) {
+                const m = l.getAttribute('href')?.match(/\/activities\/(\d+)/);
+                if (m) uniqueIds.add(m[1]);
+            }
+            // If this container has multiple different activity IDs, we've gone too far
+            if (uniqueIds.size > 1) {
+                // Return the previous level (the child that contained only our activity)
+                return current.previousElementSibling ? null : null;
+            }
+
+            // A reasonable card boundary: has a map image AND activity links all for the same ID
+            if (uniqueIds.size === 1 && findMapImage(current)) {
+                return current;
+            }
+        }
+        return null;
+    }
+
     function attemptReplaceById(activityId, actData) {
         const links = document.querySelectorAll(`a[href*="/activities/${activityId}"]`);
         
         for (const link of links) {
-            let mapImg = findMapImage(link);
-            
-            if (!mapImg) {
-                // Walk up to find the activity card containing the map
+            // First, find the card boundary for this specific activity
+            const card = findActivityCard(link);
+            let mapImg = null;
+
+            if (card) {
+                // Only look for a map image within this activity's card
+                mapImg = findMapImage(card);
+                // Verify this card doesn't also contain links to OTHER activities
+                // (which would mean it's a group container, not a single-activity card)
+                if (mapImg) {
+                    const cardLinks = card.querySelectorAll('a[href*="/activities/"]');
+                    const otherIds = new Set();
+                    for (const cl of cardLinks) {
+                        const m = cl.getAttribute('href')?.match(/\/activities\/(\d+)/);
+                        if (m && m[1] !== activityId) otherIds.add(m[1]);
+                    }
+                    // If this card has links to other activities, make sure the map image
+                    // is spatially closer to our activity link than to others
+                    if (otherIds.size > 0) {
+                        mapImg = findMapImageClosestTo(card, link, activityId);
+                    }
+                }
+            } else {
+                // Fallback: walk up cautiously, but stop if we hit a container 
+                // with multiple different activity IDs
                 let el = link;
                 for (let i = 0; i < 10; i++) {
                     el = el.parentElement;
                     if (!el || el === document.body) break;
+
+                    // Check if this level has links to other activities — if so, stop
+                    const siblingLinks = el.querySelectorAll('a[href*="/activities/"]');
+                    const idsHere = new Set();
+                    for (const sl of siblingLinks) {
+                        const m = sl.getAttribute('href')?.match(/\/activities\/(\d+)/);
+                        if (m) idsHere.add(m[1]);
+                    }
+                    if (idsHere.size > 1) break; // multiple activities in this container, stop
+
                     mapImg = findMapImage(el);
                     if (mapImg && !replacedElements.has(mapImg)) break;
                     mapImg = null;
@@ -417,6 +487,45 @@
                 break;
             }
         }
+    }
+
+    /**
+     * When a container has multiple activities, find the map image that is
+     * closest (in DOM order) to the link for our target activity.
+     */
+    function findMapImageClosestTo(container, targetLink, activityId) {
+        const allMapImgs = container.querySelectorAll(
+            'img[src*="d3o5xota0a1fcr.cloudfront.net"], img[srcset*="d3o5xota0a1fcr.cloudfront.net"], img[src*="/v6/maps/"]'
+        );
+        if (allMapImgs.length === 0) return null;
+        if (allMapImgs.length === 1) {
+            // Only one map in the container — only use it if there's a strong
+            // association (no other activity links between the map and our link)
+            return allMapImgs[0];
+        }
+
+        // For each map image, find the nearest activity link and check if it's ours
+        for (const img of allMapImgs) {
+            if (replacedElements.has(img)) continue;
+
+            // Walk up from the image to find the closest activity link sibling
+            let parent = img.parentElement;
+            for (let i = 0; i < 8; i++) {
+                if (!parent) break;
+                const nearbyLink = parent.querySelector(`a[href*="/activities/${activityId}"]`);
+                if (nearbyLink) return img;
+                
+                // Check if a DIFFERENT activity link is closer
+                const anyLink = parent.querySelector('a[href*="/activities/"]');
+                if (anyLink) {
+                    const m = anyLink.getAttribute('href')?.match(/\/activities\/(\d+)/);
+                    if (m && m[1] !== activityId) break; // belongs to another activity
+                }
+                parent = parent.parentElement;
+            }
+        }
+
+        return null;
     }
 
     /**
