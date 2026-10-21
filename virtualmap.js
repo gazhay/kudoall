@@ -249,7 +249,7 @@
         return tmp.textContent || tmp.innerText || '';
     }
 
-    function getBasemapUrl(worldName) {
+    function getBasemapUrl(worldName, style = 'standard') {
         if (!worldName) return null;
         const nameToFile = {
             'Watopia': 'watopia',
@@ -268,7 +268,56 @@
         };
         const filename = nameToFile[worldName];
         if (!filename) return null;
-        return chrome.runtime.getURL(`maps/${filename}.webp`);
+        const suffix = style === 'standard' ? '' : `.${style}`;
+        return chrome.runtime.getURL(`maps/${filename}${suffix}.webp`);
+    }
+
+    function getSelectedMapStyle() {
+        try {
+            const style = localStorage.getItem('virtualmap-style');
+            return ['standard', 'oldpaper', 'colourblind'].includes(style) ? style : 'standard';
+        } catch (e) {
+            return 'standard';
+        }
+    }
+
+    function addBasemapChooser(mapDiv, worldName, basemapOverlay) {
+        if (!basemapOverlay) return;
+
+        const chooser = document.createElement('select');
+        chooser.className = 'virtualmap-style-chooser';
+        chooser.setAttribute('aria-label', 'Map style');
+        chooser.title = 'Map style';
+        chooser.innerHTML = '<option value="standard">Standard</option><option value="oldpaper">Old paper</option><option value="colourblind">Colourblind</option>';
+        chooser.value = getSelectedMapStyle();
+
+        let activeStyle = chooser.value;
+        const updateBasemap = () => {
+            activeStyle = chooser.value;
+            basemapOverlay.setUrl(getBasemapUrl(worldName, activeStyle));
+            try {
+                localStorage.setItem('virtualmap-style', activeStyle);
+            } catch (e) {
+                // The chooser still works for this page if storage is unavailable.
+            }
+        };
+
+        basemapOverlay.on('error', () => {
+            if (activeStyle === 'standard') return;
+            activeStyle = 'standard';
+            chooser.value = 'standard';
+            basemapOverlay.setUrl(getBasemapUrl(worldName));
+            try {
+                localStorage.setItem('virtualmap-style', 'standard');
+            } catch (e) {
+                // The fallback still applies for this page if storage is unavailable.
+            }
+        });
+        basemapOverlay.setUrl(getBasemapUrl(worldName, activeStyle));
+        chooser.addEventListener('change', updateBasemap);
+        chooser.addEventListener('pointerdown', event => event.stopPropagation());
+        chooser.addEventListener('click', event => event.stopPropagation());
+        mapDiv.appendChild(chooser);
     }
 
     /**
@@ -346,9 +395,11 @@
         );
 
         const basemapUrl = getBasemapUrl(worldName);
+        let basemapOverlay = null;
         if (basemapUrl) {
-            L.imageOverlay(basemapUrl, worldBounds).addTo(map);
+            basemapOverlay = L.imageOverlay(basemapUrl, worldBounds).addTo(map);
         }
+        addBasemapChooser(mapDiv, worldName, basemapOverlay);
 
         // Draw route and fit view to it
         const routeLine = L.polyline(polyline, {
@@ -759,39 +810,43 @@
         // Strava's activity map is typically in a div with specific selectors
         const mapSelectors = [
             '#map-canvas',
+            '.mapboxgl-map',
             '[class*="MapContainer"]',
             '[class*="map-container"]',
-            '[data-testid*="map"]',
-            '.activity-map .mapboxgl-map',
-            '.mapboxgl-map'
+            '[data-testid*="map"]'
         ];
 
-        let existingMap = null;
-        for (const sel of mapSelectors) {
-            existingMap = document.querySelector(sel);
-            if (existingMap) break;
-        }
-
-        if (!existingMap) {
-            // Wait for it to render
-            const observer = new MutationObserver((mutations, obs) => {
-                for (const sel of mapSelectors) {
-                    existingMap = document.querySelector(sel);
-                    if (existingMap) {
-                        obs.disconnect();
-                        doReplaceActivityMap(existingMap, worldName, extentsData, polyline);
-                        return;
-                    }
+        const findUnreplacedMap = () => {
+            for (const selector of mapSelectors) {
+                for (const candidate of document.querySelectorAll(selector)) {
+                    if (candidate.classList.contains('virtualmap-leaflet') || replacedActivityMaps.has(candidate)) continue;
+                    const nestedMap = candidate.querySelector('.mapboxgl-map');
+                    const existingMap = nestedMap || candidate;
+                    if (existingMap.classList.contains('virtualmap-leaflet') || replacedActivityMaps.has(existingMap)) continue;
+                    if (existingMap.querySelector('.virtualmap-leaflet')) continue;
+                    return existingMap;
                 }
-            });
-            observer.observe(document.body, { childList: true, subtree: true });
-            // Also timeout after 10s
-            setTimeout(() => observer.disconnect(), 10000);
-            return;
-        }
+            }
+            return null;
+        };
 
-        doReplaceActivityMap(existingMap, worldName, extentsData, polyline);
+        const replaceAvailableMaps = () => {
+            let existingMap;
+            while ((existingMap = findUnreplacedMap())) {
+                replacedActivityMaps.add(existingMap);
+                doReplaceActivityMap(existingMap, worldName, extentsData, polyline);
+            }
+        };
+
+        replaceAvailableMaps();
+        if (!activityMapObserver) {
+            activityMapObserver = new MutationObserver(replaceAvailableMaps);
+            activityMapObserver.observe(document.body, { childList: true, subtree: true });
+        }
     }
+
+    const replacedActivityMaps = new WeakSet();
+    let activityMapObserver = null;
 
     function doReplaceActivityMap(existingMap, worldName, extentsData, polyline) {
         const container = existingMap.parentElement || existingMap;
@@ -840,9 +895,11 @@
 
         // Basemap overlay
         const basemapUrl = getBasemapUrl(worldName);
+        let basemapOverlay = null;
         if (basemapUrl) {
-            L.imageOverlay(basemapUrl, worldBounds).addTo(map);
+            basemapOverlay = L.imageOverlay(basemapUrl, worldBounds).addTo(map);
         }
+        addBasemapChooser(mapDiv, worldName, basemapOverlay);
 
         // Route
         const routeLine = L.polyline(polyline, {
@@ -852,6 +909,8 @@
             smoothFactor: 1
         }).addTo(map);
 
+        installChartHoverMarker(map, polyline);
+
         map.fitBounds(routeLine.getBounds(), { padding: [20, 20] });
 
         // Attribution
@@ -859,6 +918,48 @@
             position: 'bottomright',
             prefix: false
         }).addAttribution('© <a href="https://openstreetmap.org">OSM</a>').addTo(map);
+    }
+
+    function installChartHoverMarker(map, polyline) {
+        const marker = L.circleMarker(polyline[0], {
+            radius: 6,
+            color: '#fff',
+            weight: 2,
+            fillColor: '#fc5200',
+            fillOpacity: 1,
+            interactive: false
+        });
+
+        document.addEventListener('pointermove', event => {
+            let chart = event.target.closest?.('svg, canvas');
+            if (!chart || !chart.isConnected) {
+                if (map.hasLayer(marker)) map.removeLayer(marker);
+                return;
+            }
+
+            const rect = chart.getBoundingClientRect();
+            if (rect.width < 80 || rect.height < 30) return;
+
+            let pointIndex = null;
+            let pointElement = event.target;
+            while (pointElement && pointElement !== chart) {
+                const value = pointElement.getAttribute?.('data-point-index') ?? pointElement.getAttribute?.('data-index');
+                if (value !== null && /^\d+$/.test(value)) {
+                    pointIndex = Number(value);
+                    break;
+                }
+                pointElement = pointElement.parentElement;
+            }
+
+            if (pointIndex === null) {
+                const progress = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+                pointIndex = Math.round(progress * (polyline.length - 1));
+            }
+
+            marker.setLatLng(polyline[Math.max(0, Math.min(polyline.length - 1, pointIndex))]);
+            if (!map.hasLayer(marker)) marker.addTo(map);
+            marker.bringToFront();
+        }, { passive: true });
     }
 
     if (document.readyState === 'loading') {
